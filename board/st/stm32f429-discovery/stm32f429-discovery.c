@@ -115,7 +115,7 @@ static int lcd_setup_gpio(void)
 	int i;
 	int rv = 0;
 
-	rv = stm32_gpio_config(&lcd_wrx_gpio, &gpio_ctl_gp);
+	rv = stm32_gpio_config(&lcd_wrx_gpio, &gpio_ctl_gpout);
 	if (rv)
 		goto out;
 
@@ -160,7 +160,7 @@ static int spi4_setup_gpio(void)
 	int rv = 0;
 
 	for (i = 0; i < ARRAY_SIZE(spi4_cs_gpio) - 1; i++) {
-		rv = stm32_gpio_config(&spi4_cs_gpio[i], &gpio_ctl_gp);
+		rv = stm32_gpio_config(&spi4_cs_gpio[i], &gpio_ctl_gpout);
 		if (rv)
 			goto out;
 	}
@@ -192,7 +192,7 @@ static int spi5_setup_gpio(void)
 	int rv = 0;
 
 	for (i = 0; i < ARRAY_SIZE(spi5_cs_gpio) - 1; i++) {
-		rv = stm32_gpio_config(&spi5_cs_gpio[i], &gpio_ctl_gp);
+		rv = stm32_gpio_config(&spi5_cs_gpio[i], &gpio_ctl_gpout);
 		if (rv)
 			goto out;
 	}
@@ -454,6 +454,10 @@ int board_init(void)
 int board_late_init(void)
 {
 	int res;
+
+	lcd_setup_gpio();
+	spi4_setup_gpio();
+	spi5_setup_gpio();
 
 	res = ili9341_init();
 

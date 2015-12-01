@@ -1,28 +1,17 @@
 /*
- * (C) Copyright 2014
- * Kamil Lulko, <rev13@wp.pl>
+ * (C) Copyright 2015
+ * Kamil Lulko, <kamil.lulko@gmail.com>
  *
  * SPDX-License-Identifier:	GPL-2.0+
  */
 
 #include <common.h>
+#include <dm.h>
 #include <asm/io.h>
 #include <malloc.h>
 #include <asm/arch/gpio.h>
 #include <asm/arch/stm32.h>
 #include <spi.h>
-
-#define STM32_SPI1_BASE	0x40013000 /* APB2 */
-#define STM32_SPI2_BASE	0x40003800 /* APB1 */
-#define STM32_SPI3_BASE	0x40003C00 /* APB1 */
-#define STM32_SPI4_BASE	0x40013400 /* APB2 */
-#define STM32_SPI5_BASE	0x40015000 /* APB2 */
-#define STM32_SPI6_BASE	0x40015400 /* APB2 */
-
-static const uint32_t spi_bases[] = {
-	STM32_SPI1_BASE, STM32_SPI2_BASE, STM32_SPI3_BASE,
-	STM32_SPI4_BASE, STM32_SPI5_BASE, STM32_SPI6_BASE
-};
 
 #define RCC_SPI1_ENABLE	(1 << 12)
 #define RCC_SPI2_ENABLE	(1 << 14)
@@ -31,9 +20,15 @@ static const uint32_t spi_bases[] = {
 #define RCC_SPI5_ENABLE	(1 << 20)
 #define RCC_SPI6_ENABLE	(1 << 21)
 
-static const uint32_t spi_rcc_en[] = {
-	RCC_SPI1_ENABLE, RCC_SPI2_ENABLE, RCC_SPI3_ENABLE,
-	RCC_SPI4_ENABLE, RCC_SPI5_ENABLE, RCC_SPI6_ENABLE
+#define STM32_MAX_SPI 6
+
+static const uint32_t spi_base_rcc_pair[STM32_MAX_SPI][2] = {
+	{ STM32_SPI1_BASE, RCC_SPI1_ENABLE },
+	{ STM32_SPI2_BASE, RCC_SPI2_ENABLE },
+	{ STM32_SPI3_BASE, RCC_SPI3_ENABLE },
+	{ STM32_SPI4_BASE, RCC_SPI4_ENABLE },
+	{ STM32_SPI5_BASE, RCC_SPI5_ENABLE },
+	{ STM32_SPI6_BASE, RCC_SPI6_ENABLE }
 };
 
 /* To have board specific CS pin list without having to touch this driver
@@ -63,156 +58,70 @@ struct stm32_spi {
 	uint32_t i2spr;
 };
 
+struct stm32_spi_platdata {
+	int frequency;		/* Default clock frequency, -1 for none */
+	ulong base;
+};
+
+struct stm32_spi_priv {
+	struct stm32_spi *regs;
+	unsigned int freq;
+	unsigned int mode;
+	int apb_bus;
+};
+
 struct stm32_spi_slave {
 	struct spi_slave slave;
 	u8 cs_pol;
 };
 
-#define SPI_CR1_CPHA	(1 << 0)
-#define SPI_CR1_CPOL	(1 << 1)
-#define SPI_CR1_MSTR	(1 << 2)
-#define SPI_CR1_BR0	(1 << 3)
-#define SPI_CR1_BR1	(1 << 4)
-#define SPI_CR1_BR2	(1 << 5)
-#define SPI_CR1_BR_SHIFT	3
-#define SPI_CR1_BR_MASK	(7 << SPI_CR1_BR_SHIFT)
-#define SPI_CR1_SPE	(1 << 6)
-#define SPI_CR1_LSBFIRST	(1 << 7)
-#define SPI_CR1_SSI	(1 << 8)
-#define SPI_CR1_SSM	(1 << 9)
-#define SPI_CR1_RXONLY	(1 << 10)
-#define SPI_CR1_DFF	(1 << 11)
-#define SPI_CR1_CRCNEXT	(1 << 12)
-#define SPI_CR1_CRCEN	(1 << 13)
-#define SPI_CR1_BIDIOE	(1 << 14)
-#define SPI_CR1_BIDIMODE	(1 << 15)
+#define SPI_CR1_CPHA			(1 << 0)
+#define SPI_CR1_CPOL			(1 << 1)
+#define SPI_CR1_MSTR			(1 << 2)
+#define SPI_CR1_BR0			(1 << 3)
+#define SPI_CR1_BR1			(1 << 4)
+#define SPI_CR1_BR2			(1 << 5)
+#define SPI_CR1_BR_SHIFT		3
+#define SPI_CR1_BR_MASK		(7 << SPI_CR1_BR_SHIFT)
+#define SPI_CR1_SPE			(1 << 6)
+#define SPI_CR1_LSBFIRST		(1 << 7)
+#define SPI_CR1_SSI			(1 << 8)
+#define SPI_CR1_SSM			(1 << 9)
+#define SPI_CR1_RXONLY		(1 << 10)
+#define SPI_CR1_DFF			(1 << 11)
+#define SPI_CR1_CRCNEXT		(1 << 12)
+#define SPI_CR1_CRCEN			(1 << 13)
+#define SPI_CR1_BIDIOE		(1 << 14)
+#define SPI_CR1_BIDIMODE		(1 << 15)
 
-#define SPI_SR_RXNE	(1 << 0)
-#define SPI_SR_TXE	(1 << 1)
+#define SPI_SR_RXNE			(1 << 0)
+#define SPI_SR_TXE			(1 << 1)
 
 #define SPI_I2SCFGR_I2SMOD	(1 << 11)
 
 DECLARE_GLOBAL_DATA_PTR;
 
-void spi_init(void)
+int stm32_spi_claim_bus(struct udevice *dev)
 {
-}
+	struct stm32_spi_priv *priv = dev_get_priv(dev);
 
-static int spi_cfg_stm32(struct spi_slave *slave,
-		unsigned int cs, unsigned int max_hz, unsigned int mode)
-{
-	volatile struct stm32_spi *spi =
-			(struct stm32_spi *)spi_bases[slave->bus];
+	setbits_le32(priv->regs->cr1, SPI_CR1_SPE);
 
-	/* SPI2 and SPI3 are on the APB1 */
-	if (slave->bus == 1 || slave->bus == 2)
-		setbits_le32(&STM32_RCC->apb1enr, spi_rcc_en[slave->bus]);
-	else
-		setbits_le32(&STM32_RCC->apb2enr, spi_rcc_en[slave->bus]);
-
-	spi->cr1 = SPI_CR1_MSTR | SPI_CR1_SSI | SPI_CR1_SSM;
-	spi->i2scfgr &= (uint16_t)(~SPI_I2SCFGR_I2SMOD);
-
-	if (mode & SPI_CPHA)
-		spi->cr1 |= SPI_CR1_CPHA;
-	else
-		spi->cr1 &= (uint16_t)(~SPI_CR1_CPHA);
-
-	if (mode & SPI_CPOL)
-		spi->cr1 |= SPI_CR1_CPOL;
-	else
-		spi->cr1 &= (uint16_t)(~SPI_CR1_CPOL);
-
-	if (mode & SPI_LSB_FIRST)
-		spi->cr1 |= SPI_CR1_LSBFIRST;
-	else
-		spi->cr1 &= (uint16_t)(~SPI_CR1_LSBFIRST);
-
-	spi_set_speed(slave, max_hz);
+	//spi_cs_deactivate(slave);
 
 	return 0;
 }
 
-int spi_cs_is_valid(unsigned int bus, unsigned int cs)
-{
-	unsigned int i = 0;
-
-	while (spi_cs_array[bus][i].pin != -1 &&
-		spi_cs_array[bus][i].port != -1)
-		i++;
-
-	if ((cs + 1) > i)
-		return 0;
-	else
-		return 1;
-}
-
-static inline struct stm32_spi_slave *to_stm32_spi_slave(
-		struct spi_slave *slave)
-{
-	return container_of(slave, struct stm32_spi_slave, slave);
-}
-
-struct spi_slave *spi_setup_slave(unsigned int bus, unsigned int cs,
-		unsigned int max_hz, unsigned int mode)
-{
-	struct stm32_spi_slave *stm32_slave;
-	int ret;
-
-	if (bus > 5)
-		return NULL;
-
-	if (!spi_cs_is_valid(bus, cs))
-		return NULL;
-
-	stm32_slave = spi_alloc_slave(struct stm32_spi_slave, bus, cs);
-	if (!stm32_slave) {
-		puts("stm32_spi: SPI Slave not allocated !\n");
-		return NULL;
-	}
-
-	stm32_slave->cs_pol = (mode & SPI_CS_HIGH) ? 1 : 0;
-
-	ret = spi_cfg_stm32(&stm32_slave->slave, cs, max_hz, mode);
-	if (ret) {
-		if (gd->have_console)
-			printf("stm32_spi: cannot setup SPI controller\n");
-		free(stm32_slave);
-		return NULL;
-	}
-
-	return &stm32_slave->slave;
-}
-
-void spi_free_slave(struct spi_slave *slave)
-{
-	struct stm32_spi_slave *stm32_slave = to_stm32_spi_slave(slave);
-
-	free(stm32_slave);
-}
-
-int spi_claim_bus(struct spi_slave *slave)
-{
-	volatile struct stm32_spi *spi =
-			(struct stm32_spi *)spi_bases[slave->bus];
-
-	spi->cr1 |= SPI_CR1_SPE;
-
-	spi_cs_deactivate(slave);
-
-	return 0;
-}
-
-void spi_release_bus(struct spi_slave *slave)
+int stm32_spi_release_bus(struct udevice *dev)
 {
 	/* TODO: Shut the controller down */
+	return 0;
 }
 
-int  spi_xfer(struct spi_slave *slave, unsigned int bitlen, const void *dout,
-		void *din, unsigned long flags)
+int  stm32_spi_xfer(struct udevice *dev, unsigned int bitlen, const void *dout,
+		    void *din, unsigned long flags)
 {
-	volatile struct stm32_spi *spi =
-			(struct stm32_spi *)spi_bases[slave->bus];
+	struct stm32_spi_priv *priv = dev_get_priv(dev);
 	unsigned int	len;
 	const u8	*txp = dout;
 	u8 *rxp = din;
@@ -226,12 +135,12 @@ int  spi_xfer(struct spi_slave *slave, unsigned int bitlen, const void *dout,
 			value = *txp++;
 		else
 			value = 0xFF;
-		while ((spi->sr & SPI_SR_TXE) == 0)
+		while ((readl(&priv->regs->sr) & SPI_SR_TXE) == 0)
 			;
-		spi->dr = value;
-		while ((spi->sr & SPI_SR_RXNE) == 0)
+		writel(value, &priv->regs->dr);
+		while ((readl(&priv->regs->sr) & SPI_SR_RXNE) == 0)
 			;
-		value = spi->dr;
+		value = readl(&priv->regs->dr);
 		if (rxp)
 			*rxp++ = value;
 	}
@@ -241,45 +150,125 @@ int  spi_xfer(struct spi_slave *slave, unsigned int bitlen, const void *dout,
 
 void spi_cs_activate(struct spi_slave *slave)
 {
-	struct stm32_spi_slave *stm32_slave = to_stm32_spi_slave(slave);
+	//struct stm32_spi_slave *stm32_slave = to_stm32_spi_slave(slave);
 
-	if (stm32_slave->cs_pol == 0)
-		stm32_gpout_set(&spi_cs_array[slave->bus][slave->cs], 0);
-	else
-		stm32_gpout_set(&spi_cs_array[slave->bus][slave->cs], 1);
+//	if (stm32_slave->cs_pol == 0)
+//		stm32_gpout_set(&spi_cs_array[slave->bus][slave->cs], 0);
+//	else
+//		stm32_gpout_set(&spi_cs_array[slave->bus][slave->cs], 1);
 }
 
 void spi_cs_deactivate(struct spi_slave *slave)
 {
-	struct stm32_spi_slave *stm32_slave = to_stm32_spi_slave(slave);
+	//struct stm32_spi_slave *stm32_slave = to_stm32_spi_slave(slave);
 
-	if (stm32_slave->cs_pol == 0)
-		stm32_gpout_set(&spi_cs_array[slave->bus][slave->cs], 1);
-	else
-		stm32_gpout_set(&spi_cs_array[slave->bus][slave->cs], 0);
+//	if (stm32_slave->cs_pol == 0)
+//		stm32_gpout_set(&spi_cs_array[slave->bus][slave->cs], 1);
+//	else
+//		stm32_gpout_set(&spi_cs_array[slave->bus][slave->cs], 0);
 }
 
-void spi_set_speed(struct spi_slave *slave, uint hz)
+int stm32_spi_set_speed(struct udevice *bus, uint hz)
 {
-	volatile struct stm32_spi *spi =
-			(struct stm32_spi *)spi_bases[slave->bus];
+	struct stm32_spi_priv *priv = dev_get_priv(bus);
 	int apb_clk, i;
 
-	if (slave->bus == 1 || slave->bus == 2)
+	if (priv->apb_bus == 1)
 		apb_clk = clock_get(CLOCK_APB1);
 	else
 		apb_clk = clock_get(CLOCK_APB2);
 
-	spi->cr1 &= (~SPI_CR1_BR_MASK);
+
+	clrbits_le32(&priv->regs->cr1, SPI_CR1_BR_MASK);
 
 	for (i = 0; i < 8; i++) {
 		int spi_clk = apb_clk / (1 << (i + 1));
 		if (spi_clk <= hz) {
-			spi->cr1 |= (i << SPI_CR1_BR_SHIFT);
-			if (gd->have_console)
-				printf("stm32_spi: spi %d clock set to %d\n",
-				       slave->bus, spi_clk);
+			setbits_le32(&priv->regs->cr1, (i << SPI_CR1_BR_SHIFT));
 			break;
 		}
 	}
+
+	return 0;
 }
+
+int stm32_spi_set_mode(struct udevice *bus, uint mode)
+{
+	struct stm32_spi_priv *priv = dev_get_priv(bus);
+
+	if (mode & SPI_CPHA)
+		setbits_le32(&priv->regs->cr1, SPI_CR1_CPHA);
+	else
+		clrbits_le32(&priv->regs->cr1, SPI_CR1_CPHA);
+
+	if (mode & SPI_CPOL)
+		setbits_le32(&priv->regs->cr1, SPI_CR1_CPOL);
+	else
+		clrbits_le32(&priv->regs->cr1, SPI_CR1_CPOL);
+
+	if (mode & SPI_LSB_FIRST)
+		setbits_le32(&priv->regs->cr1, SPI_CR1_LSBFIRST);
+	else
+		clrbits_le32(&priv->regs->cr1, SPI_CR1_LSBFIRST);
+	return 0;
+}
+
+int stm32_spi_cs_info(struct udevice *bus, uint cs, struct spi_cs_info *info)
+{
+	return 0;
+}
+
+static int stm32_spi_probe(struct udevice *bus)
+{
+	struct stm32_spi_platdata *plat = dev_get_platdata(bus);
+	struct stm32_spi_priv *priv = dev_get_priv(bus);
+	struct stm32_spi *regs;
+	s32 spi_number = -1;
+	s32 i;
+
+	priv->regs = (struct stm32_spi *)plat->base;
+	regs = priv->regs;
+
+	priv->freq = plat->frequency;
+
+	if ((plat->base & STM32_BUS_MASK) == STM32_APB1PERIPH_BASE)
+		priv->apb_bus = 1;
+	else if ((plat->base & STM32_BUS_MASK) == STM32_APB2PERIPH_BASE)
+		priv->apb_bus = 2;
+	else
+		return -EINVAL;
+
+	for (i = 0; i < STM32_MAX_SPI; i++) {
+		if (plat->base == spi_base_rcc_pair[i][0])
+			spi_number = i;
+	}
+
+	if (spi_number == -1)
+		return -EINVAL;
+
+	if (priv->apb_bus == 1)
+		setbits_le32(&STM32_RCC->apb1enr, spi_base_rcc_pair[spi_number][1]);
+	else
+		setbits_le32(&STM32_RCC->apb2enr, spi_base_rcc_pair[spi_number][1]);
+
+	writel(SPI_CR1_MSTR | SPI_CR1_SSI | SPI_CR1_SSM ,&regs->cr1);
+	clrbits_le32(&regs->i2scfgr, SPI_I2SCFGR_I2SMOD);
+
+	return 0;
+}
+
+static const struct dm_spi_ops stm32_spi_ops = {
+	.claim_bus	= stm32_spi_claim_bus,
+	.release_bus	= stm32_spi_release_bus,
+	.xfer		= stm32_spi_xfer,
+	.set_speed	= stm32_spi_set_speed,
+	.set_mode	= stm32_spi_set_mode,
+	.cs_info	= stm32_spi_cs_info,
+};
+
+U_BOOT_DRIVER(stm32_spi) = {
+	.name	= "stm32_spi",
+	.id	= UCLASS_SPI,
+	.ops	= &stm32_spi_ops,
+	.probe	= stm32_spi_probe,
+};
