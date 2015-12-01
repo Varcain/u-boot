@@ -9,4 +9,4 @@
 #
 
 obj-y	:= stm32f429-discovery.o
-obj-y	+= led.o
+obj-y	+= led.o ili9341.o

@@ -17,6 +17,9 @@
 #include <asm/arch/stm32.h>
 #include <asm/arch/gpio.h>
 #include <asm/arch/fmc.h>
+#include <lcd.h>
+
+#include "ili9341.h"
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -48,6 +51,154 @@ int uart_setup_gpio(void)
 
 	for (i = 0; i < ARRAY_SIZE(usart_gpio); i++) {
 		rv = stm32_gpio_config(&usart_gpio[i], &gpio_ctl_usart);
+		if (rv)
+			goto out;
+	}
+
+out:
+	return rv;
+}
+
+const struct stm32_gpio_dsc lcd_wrx_gpio = {
+	STM32_GPIO_PORT_D, STM32_GPIO_PIN_13
+};
+
+const struct stm32_gpio_ctl gpio_ctl_ltdc_af9 = {
+	.mode = STM32_GPIO_MODE_AF,
+	.otype = STM32_GPIO_OTYPE_PP,
+	.speed = STM32_GPIO_SPEED_50M,
+	.pupd = STM32_GPIO_PUPD_NO,
+	.af = STM32_GPIO_AF9
+};
+
+static const struct stm32_gpio_dsc lcd_af9_gpio[] = {
+	{STM32_GPIO_PORT_B, STM32_GPIO_PIN_0},	/* R3 */
+	{STM32_GPIO_PORT_B, STM32_GPIO_PIN_1},	/* R6 */
+	{STM32_GPIO_PORT_G, STM32_GPIO_PIN_10},	/* G3 */
+	{STM32_GPIO_PORT_G, STM32_GPIO_PIN_12},	/* B4 */
+};
+
+const struct stm32_gpio_ctl gpio_ctl_ltdc_af14 = {
+	.mode = STM32_GPIO_MODE_AF,
+	.otype = STM32_GPIO_OTYPE_PP,
+	.speed = STM32_GPIO_SPEED_50M,
+	.pupd = STM32_GPIO_PUPD_NO,
+	.af = STM32_GPIO_AF14
+};
+
+static const struct stm32_gpio_dsc lcd_af14_gpio[] = {
+	{STM32_GPIO_PORT_C, STM32_GPIO_PIN_10},	/* R2 */
+	{STM32_GPIO_PORT_A, STM32_GPIO_PIN_11},	/* R4 */
+	{STM32_GPIO_PORT_A, STM32_GPIO_PIN_12},	/* R5 */
+	{STM32_GPIO_PORT_G, STM32_GPIO_PIN_6},	/* R7 */
+
+	{STM32_GPIO_PORT_A, STM32_GPIO_PIN_6},	/* G2 */
+	{STM32_GPIO_PORT_B, STM32_GPIO_PIN_10},	/* G4 */
+	{STM32_GPIO_PORT_B, STM32_GPIO_PIN_11},	/* G5 */
+	{STM32_GPIO_PORT_C, STM32_GPIO_PIN_7},	/* G6 */
+	{STM32_GPIO_PORT_D, STM32_GPIO_PIN_3},	/* G7 */
+
+	{STM32_GPIO_PORT_D, STM32_GPIO_PIN_6},	/* B2 */
+	{STM32_GPIO_PORT_G, STM32_GPIO_PIN_11},	/* B3 */
+	{STM32_GPIO_PORT_A, STM32_GPIO_PIN_3},	/* B5 */
+	{STM32_GPIO_PORT_B, STM32_GPIO_PIN_8},	/* B6 */
+	{STM32_GPIO_PORT_B, STM32_GPIO_PIN_9},	/* B7 */
+
+	{STM32_GPIO_PORT_C, STM32_GPIO_PIN_6},	/* HSYNC */
+	{STM32_GPIO_PORT_A, STM32_GPIO_PIN_4},	/* VSYNC */
+	{STM32_GPIO_PORT_G, STM32_GPIO_PIN_7},	/* PIXCLK */
+	{STM32_GPIO_PORT_F, STM32_GPIO_PIN_10},	/* DE */
+};
+
+static int lcd_setup_gpio(void)
+{
+	int i;
+	int rv = 0;
+
+	rv = stm32_gpio_config(&lcd_wrx_gpio, &gpio_ctl_gp);
+	if (rv)
+		goto out;
+
+	for (i = 0; i < ARRAY_SIZE(lcd_af9_gpio); i++) {
+		rv = stm32_gpio_config(&lcd_af9_gpio[i], &gpio_ctl_ltdc_af9);
+		if (rv)
+			goto out;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(lcd_af14_gpio); i++) {
+		rv = stm32_gpio_config(&lcd_af14_gpio[i], &gpio_ctl_ltdc_af14);
+		if (rv)
+			goto out;
+	}
+
+out:
+	return rv;
+}
+
+const struct stm32_gpio_ctl gpio_ctl_spi = {
+	.mode = STM32_GPIO_MODE_AF,
+	.otype = STM32_GPIO_OTYPE_PP,
+	.speed = STM32_GPIO_SPEED_50M,
+	.pupd = STM32_GPIO_PUPD_NO,
+	.af = STM32_GPIO_AF5
+};
+
+static const struct stm32_gpio_dsc spi4_gpio[] = {
+	{STM32_GPIO_PORT_E, STM32_GPIO_PIN_2},	/* SCK */
+	{STM32_GPIO_PORT_E, STM32_GPIO_PIN_5},	/* MISO */
+	{STM32_GPIO_PORT_E, STM32_GPIO_PIN_6}	/* MOSI */
+};
+
+const struct stm32_gpio_dsc spi4_cs_gpio[] = {
+	{STM32_GPIO_PORT_E, STM32_GPIO_PIN_4},
+	{-1, -1}
+};
+
+static int spi4_setup_gpio(void)
+{
+	int i;
+	int rv = 0;
+
+	for (i = 0; i < ARRAY_SIZE(spi4_cs_gpio) - 1; i++) {
+		rv = stm32_gpio_config(&spi4_cs_gpio[i], &gpio_ctl_gp);
+		if (rv)
+			goto out;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(spi4_gpio); i++) {
+		rv = stm32_gpio_config(&spi4_gpio[i], &gpio_ctl_spi);
+		if (rv)
+			goto out;
+	}
+
+out:
+	return rv;
+}
+
+const struct stm32_gpio_dsc spi5_cs_gpio[] = {
+	{STM32_GPIO_PORT_C, STM32_GPIO_PIN_2},
+	{-1, -1}
+};
+
+static const struct stm32_gpio_dsc spi5_gpio[] = {
+	{STM32_GPIO_PORT_F, STM32_GPIO_PIN_7}, /* SCK */
+	{STM32_GPIO_PORT_F, STM32_GPIO_PIN_8}, /* MISO */
+	{STM32_GPIO_PORT_F, STM32_GPIO_PIN_9}, /* MOSI */
+};
+
+static int spi5_setup_gpio(void)
+{
+	int i;
+	int rv = 0;
+
+	for (i = 0; i < ARRAY_SIZE(spi5_cs_gpio) - 1; i++) {
+		rv = stm32_gpio_config(&spi5_cs_gpio[i], &gpio_ctl_gp);
+		if (rv)
+			goto out;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(spi5_gpio); i++) {
+		rv = stm32_gpio_config(&spi5_gpio[i], &gpio_ctl_spi);
 		if (rv)
 			goto out;
 	}
@@ -263,6 +414,20 @@ int dram_init(void)
 	return rv;
 }
 
+void lcd_show_board_info(void)
+{
+	lcd_printf("STM32F429 Discovery\n");
+}
+
+/*
+ * Do not overwrite the console
+ * Use always serial for U-Boot console
+ */
+int overwrite_console(void)
+{
+	return 1;
+}
+
 u32 get_board_rev(void)
 {
 	return 0;
@@ -284,6 +449,15 @@ int board_init(void)
 	gd->bd->bi_boot_params = CONFIG_SYS_SDRAM_BASE + 0x100;
 
 	return 0;
+}
+
+int board_late_init(void)
+{
+	int res;
+
+	res = ili9341_init();
+
+	return res;
 }
 
 #ifdef CONFIG_MISC_INIT_R
